@@ -229,9 +229,50 @@ def _get_secret(key, default=""):
 # ----------------------------
 # CC Token refresh
 # ----------------------------
+CC_TOKEN_CACHE_PATH = "/tmp/cc_refresh_token.txt"
+
+
+def _cc_save_refresh_token(token):
+    """Persist the latest CC refresh token to the container's /tmp (survives session restarts
+    while the container is warm; lost on cold deploy). Also updates local secrets.toml."""
+    try:
+        with open(CC_TOKEN_CACHE_PATH, "w") as f:
+            f.write(token.strip())
+    except Exception:
+        pass
+    # Also update local secrets.toml so local dev stays current
+    local_secrets = os.path.expanduser("~/.streamlit/secrets.toml")
+    try:
+        if os.path.exists(local_secrets):
+            content = open(local_secrets).read()
+            import re as _re
+            content = _re.sub(
+                r'CC_REFRESH_TOKEN\s*=\s*"[^"]*"',
+                f'CC_REFRESH_TOKEN = "{token}"',
+                content,
+            )
+            with open(local_secrets, "w") as f:
+                f.write(content)
+    except Exception:
+        pass
+
+
+def _cc_load_cached_refresh_token():
+    """Read the latest CC refresh token — /tmp cache first, then secrets."""
+    try:
+        if os.path.exists(CC_TOKEN_CACHE_PATH):
+            tok = open(CC_TOKEN_CACHE_PATH).read().strip()
+            if tok:
+                return tok
+    except Exception:
+        pass
+    return _get_secret("CC_REFRESH_TOKEN")
+
+
 def _cc_refresh_token(refresh_token):
     """Exchange a CC refresh token for a fresh access token.
-    Returns (access_token, expires_in) or raises on failure.
+    Returns (access_token, new_refresh_token, expires_in).
+    CC rotates refresh tokens — always capture and save the new one.
     """
     import base64 as _b64
     basic = _b64.b64encode(f"{CC_CLIENT_ID}:{CC_CLIENT_SECRET}".encode()).decode()
@@ -249,26 +290,30 @@ def _cc_refresh_token(refresh_token):
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["access_token"], data.get("expires_in", 28800)
+    new_refresh = data.get("refresh_token", refresh_token)
+    return data["access_token"], new_refresh, data.get("expires_in", 28800)
 
 
 def _cc_ensure_token():
     """Ensure a valid CC access token is in session_state.
-    Called once per session (checks if already set to avoid re-refreshing).
-    Sets st.session_state['cc_access_token'] or st.session_state['cc_error'].
+    Called once per session. Handles CC refresh token rotation by saving
+    the new refresh token to /tmp so the next session can use it.
     """
     if st.session_state.get("cc_access_token"):
         return  # already set this session
 
-    refresh_token = _get_secret("CC_REFRESH_TOKEN")
+    refresh_token = _cc_load_cached_refresh_token()
     if refresh_token:
         try:
-            access_token, _ = _cc_refresh_token(refresh_token)
+            access_token, new_refresh, _ = _cc_refresh_token(refresh_token)
+            # CC rotates tokens — save the new one immediately
+            if new_refresh != refresh_token:
+                _cc_save_refresh_token(new_refresh)
             st.session_state["cc_access_token"] = access_token
             st.session_state.pop("cc_error", None)
             return
         except Exception as e:
-            st.session_state["cc_error"] = f"Refresh failed: {e}"
+            st.session_state["cc_error"] = f"CC token refresh failed: {e}"
 
     # Fallback: direct access token (for local dev)
     access_token = _get_secret("CC_ACCESS_TOKEN")
@@ -1136,10 +1181,12 @@ def main():
                 except Exception as e:
                     if "401" in str(e) or "Unauthorized" in str(e):
                         # Token may have expired mid-session — try one refresh
-                        refresh_token = _get_secret("CC_REFRESH_TOKEN")
+                        refresh_token = _cc_load_cached_refresh_token()
                         if refresh_token:
                             try:
-                                new_token, _ = _cc_refresh_token(refresh_token)
+                                new_token, new_refresh, _ = _cc_refresh_token(refresh_token)
+                                if new_refresh != refresh_token:
+                                    _cc_save_refresh_token(new_refresh)
                                 st.session_state["cc_access_token"] = new_token
                                 cc_members = cc_get_all_tagged_members(new_token)
                                 st.success(
