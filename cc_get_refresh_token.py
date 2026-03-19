@@ -30,8 +30,9 @@ import urllib.request
 import requests
 import websockets
 
-CC_CLIENT_ID  = "ae507531-707f-4bd1-9eb0-ae6685b01e6a"
-CC_TOKEN_URL  = "https://authz.constantcontact.com/oauth2/default/v1/token"
+CC_CLIENT_ID     = "ae507531-707f-4bd1-9eb0-ae6685b01e6a"
+CC_CLIENT_SECRET = "aMVpumtSXDF7LXhyo1UAFg"
+CC_TOKEN_URL     = "https://identity.constantcontact.com/oauth2/aus1lm3ry9mF7x2Ja0h8/v1/token"
 REDIRECT_URI  = "https://localhost"
 SECRETS_PATH  = os.path.expanduser("~/.streamlit/secrets.toml")
 
@@ -133,16 +134,20 @@ async def _find_google_btn(ws):
 
 # ── Token exchange ────────────────────────────────────────────────────────────
 def _exchange_code(code, verifier):
+    import base64 as _b64
+    basic = _b64.b64encode(f"{CC_CLIENT_ID}:{CC_CLIENT_SECRET}".encode()).decode()
     resp = requests.post(
         CC_TOKEN_URL,
         data={
             "grant_type":    "authorization_code",
-            "client_id":     CC_CLIENT_ID,
             "code":          code,
             "redirect_uri":  REDIRECT_URI,
             "code_verifier": verifier,
         },
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type":  "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {basic}",
+        },
         timeout=15,
     )
     resp.raise_for_status()
