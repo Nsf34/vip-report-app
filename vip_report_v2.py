@@ -1105,14 +1105,14 @@ def main():
                         except Exception as e:
                             st.error(f"MC campaign fetch failed: {e}")
 
-                    for camp in mc_campaigns:
-                        label = camp.get("date", "") or camp["id"]
-                        with st.spinner(f"MC openers: {label}..."):
+                    with st.spinner(f"Fetching opens for {len(mc_campaigns)} campaigns in parallel..."):
+                        def _fetch_openers_safe(camp):
                             try:
-                                mc_opener_sets.append(mc_get_openers(mc_api_key, camp["id"]))
-                            except Exception as e:
-                                st.warning(f"MC openers {label}: {e}")
-                                mc_opener_sets.append(set())
+                                return mc_get_openers(mc_api_key, camp["id"])
+                            except Exception:
+                                return set()
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+                            mc_opener_sets = list(pool.map(_fetch_openers_safe, mc_campaigns))
 
                     _mc_cache_save(mc_members, mc_campaigns, mc_opener_sets)
 
