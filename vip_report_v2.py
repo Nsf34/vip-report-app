@@ -17,7 +17,8 @@ CC_CLIENT_ID     = "ae507531-707f-4bd1-9eb0-ae6685b01e6a"
 CC_CLIENT_SECRET = "aMVpumtSXDF7LXhyo1UAFg"
 CC_TOKEN_URL     = "https://identity.constantcontact.com/oauth2/aus1lm3ry9mF7x2Ja0h8/v1/token"
 
-MC_CACHE_PATH = os.path.expanduser("~/.vip_report_mc_cache.json")
+MC_CACHE_PATH        = os.path.expanduser("~/.vip_report_mc_cache.json")
+MC_CACHE_REPO_PATH   = os.path.join(os.path.dirname(__file__), "mc_cache.json")
 
 # MC: bulk/engagement segment IDs to EXCLUDE
 MC_BULK_SEGMENT_IDS = {7299631}
@@ -298,20 +299,23 @@ def _mc_cache_save(members, campaigns, opener_sets):
 
 
 def _mc_cache_load():
-    try:
-        if not os.path.exists(MC_CACHE_PATH):
-            return None
-        with open(MC_CACHE_PATH) as f:
-            cache = json.load(f)
-        opener_sets = [set(s) for s in cache.get("opener_sets", [])]
-        return (
-            cache.get("members", []),
-            cache.get("campaigns", []),
-            opener_sets,
-            cache.get("saved_at", "unknown"),
-        )
-    except Exception:
-        return None
+    """Load MC cache — tries local user cache first, then repo-bundled fallback."""
+    for path in [MC_CACHE_PATH, MC_CACHE_REPO_PATH]:
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path) as f:
+                cache = json.load(f)
+            opener_sets = [set(s) for s in cache.get("opener_sets", [])]
+            return (
+                cache.get("members", []),
+                cache.get("campaigns", []),
+                opener_sets,
+                cache.get("saved_at", "unknown"),
+            )
+        except Exception:
+            continue
+    return None
 
 
 # ----------------------------
@@ -353,7 +357,7 @@ def mc_get_all_tagged_members(api_key, list_id):
     while True:
         url = (f"{base}/lists/{list_id}/segments?type=static"
                f"&count=100&offset={offset}")
-        r = _get_with_retry(url, headers, retries=2, timeout=15)
+        r = _get_with_retry(url, headers, retries=3, timeout=30)
         r.raise_for_status()
         batch = r.json().get("segments", [])
         if not batch:
@@ -377,7 +381,7 @@ def mc_get_all_tagged_members(api_key, list_id):
         while True:
             url = (f"{base}/lists/{list_id}/segments/{seg_id}/members"
                    f"?count=500&offset={seg_offset}")
-            r = _get_with_retry(url, headers, retries=2, timeout=15)
+            r = _get_with_retry(url, headers, retries=3, timeout=30)
             if r.status_code != 200:
                 consecutive_failures += 1
                 if consecutive_failures >= 3:
@@ -451,7 +455,7 @@ def mc_get_campaigns(api_key, list_id, start_date, end_date):
         url = (f"{base}/campaigns?status=sent&list_id={list_id}"
                f"&since_send_time={start_str}&before_send_time={end_str}"
                f"&count={count}&offset={offset}")
-        r = _get_with_retry(url, headers, retries=2, timeout=15)
+        r = _get_with_retry(url, headers, retries=3, timeout=30)
         r.raise_for_status()
         batch = r.json().get("campaigns", [])
         if not batch:
