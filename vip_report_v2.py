@@ -1151,14 +1151,14 @@ def main():
                     except Exception as e:
                         st.error(f"CC campaign fetch failed: {e}")
 
-                for camp in cc_campaigns:
-                    label = camp.get("date", "") or camp["id"]
-                    with st.spinner(f"CC openers: {label}..."):
+                with st.spinner(f"Fetching opens for {len(cc_campaigns)} CC campaigns in parallel..."):
+                    def _fetch_cc_openers_safe(camp):
                         try:
-                            cc_opener_sets.append(cc_get_openers(access_token, camp["id"]))
-                        except Exception as e:
-                            st.warning(f"CC openers {label}: {e}")
-                            cc_opener_sets.append(set())
+                            return cc_get_openers(access_token, camp["id"])
+                        except Exception:
+                            return set()
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+                        cc_opener_sets = list(pool.map(_fetch_cc_openers_safe, cc_campaigns))
 
         # Build report
         cc_df, mc_df, all_dates = build_reports(
