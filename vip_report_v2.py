@@ -1103,18 +1103,28 @@ def main():
                             mc_campaigns = mc_get_campaigns(mc_api_key, mc_list_id, start_dt, end_dt)
                             st.info(f"Mailchimp: {len(mc_campaigns)} campaigns in range.")
                         except Exception as e:
-                            st.error(f"MC campaign fetch failed: {e}")
+                            cached = _mc_cache_load()
+                            if cached:
+                                _, mc_campaigns, mc_opener_sets, saved_at = cached
+                                mc_cache_used = True
+                                st.warning(
+                                    f"Mailchimp campaign API unavailable. "
+                                    f"Using cached campaign data from {saved_at[:16]}."
+                                )
+                            else:
+                                st.error(f"MC campaign fetch failed and no cache available: {e}")
 
-                    with st.spinner(f"Fetching opens for {len(mc_campaigns)} campaigns in parallel..."):
-                        def _fetch_openers_safe(camp):
-                            try:
-                                return mc_get_openers(mc_api_key, camp["id"])
-                            except Exception:
-                                return set()
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-                            mc_opener_sets = list(pool.map(_fetch_openers_safe, mc_campaigns))
+                    if not mc_cache_used and mc_campaigns:
+                        with st.spinner(f"Fetching opens for {len(mc_campaigns)} campaigns in parallel..."):
+                            def _fetch_openers_safe(camp):
+                                try:
+                                    return mc_get_openers(mc_api_key, camp["id"])
+                                except Exception:
+                                    return set()
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+                                mc_opener_sets = list(pool.map(_fetch_openers_safe, mc_campaigns))
 
-                    _mc_cache_save(mc_members, mc_campaigns, mc_opener_sets)
+                        _mc_cache_save(mc_members, mc_campaigns, mc_opener_sets)
 
         # --- Constant Contact ---
         if run_cc:
