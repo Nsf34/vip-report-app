@@ -232,20 +232,55 @@ def _get_secret(key, default=""):
 CC_TOKEN_CACHE_PATH = "/tmp/cc_refresh_token.txt"
 
 
+def _gist_read(gist_id, pat):
+    """Read cc_refresh_token.txt from a GitHub Gist. Returns token string or None."""
+    try:
+        r = requests.get(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={"Authorization": f"token {pat}", "Accept": "application/vnd.github+json"},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            return r.json()["files"]["cc_refresh_token.txt"]["content"].strip()
+    except Exception:
+        pass
+    return None
+
+
+def _gist_write(gist_id, pat, token):
+    """Update cc_refresh_token.txt in a GitHub Gist with the new token."""
+    try:
+        requests.patch(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={"Authorization": f"token {pat}", "Accept": "application/vnd.github+json"},
+            json={"files": {"cc_refresh_token.txt": {"content": token}}},
+            timeout=8,
+        )
+    except Exception:
+        pass
+
+
 def _cc_save_refresh_token(token):
-    """Persist the latest CC refresh token to the container's /tmp (survives session restarts
-    while the container is warm; lost on cold deploy). Also updates local secrets.toml."""
+    """Persist the latest CC refresh token:
+    1. /tmp (fast, survives warm container restarts)
+    2. GitHub Gist (survives cold restarts / code deploys)
+    3. local secrets.toml (local dev convenience)
+    """
     try:
         with open(CC_TOKEN_CACHE_PATH, "w") as f:
             f.write(token.strip())
     except Exception:
         pass
-    # Also update local secrets.toml so local dev stays current
+    gist_id = _get_secret("CC_GIST_ID")
+    pat = _get_secret("GITHUB_PAT")
+    if gist_id and pat:
+        _gist_write(gist_id, pat, token)
+    # Keep local secrets.toml in sync for local dev
     local_secrets = os.path.expanduser("~/.streamlit/secrets.toml")
     try:
         if os.path.exists(local_secrets):
-            content = open(local_secrets).read()
             import re as _re
+            content = open(local_secrets).read()
             content = _re.sub(
                 r'CC_REFRESH_TOKEN\s*=\s*"[^"]*"',
                 f'CC_REFRESH_TOKEN = "{token}"',
@@ -258,7 +293,11 @@ def _cc_save_refresh_token(token):
 
 
 def _cc_load_cached_refresh_token():
-    """Read the latest CC refresh token — /tmp cache first, then secrets."""
+    """Read the latest CC refresh token:
+    1. /tmp (fastest, warm container)
+    2. GitHub Gist (authoritative cross-deploy store)
+    3. st.secrets fallback
+    """
     try:
         if os.path.exists(CC_TOKEN_CACHE_PATH):
             tok = open(CC_TOKEN_CACHE_PATH).read().strip()
@@ -266,6 +305,18 @@ def _cc_load_cached_refresh_token():
                 return tok
     except Exception:
         pass
+    gist_id = _get_secret("CC_GIST_ID")
+    pat = _get_secret("GITHUB_PAT")
+    if gist_id and pat:
+        tok = _gist_read(gist_id, pat)
+        if tok:
+            # Cache locally for this container session
+            try:
+                with open(CC_TOKEN_CACHE_PATH, "w") as f:
+                    f.write(tok)
+            except Exception:
+                pass
+            return tok
     return _get_secret("CC_REFRESH_TOKEN")
 
 
