@@ -1136,6 +1136,14 @@ def main():
                 st.session_state.pop("cc_access_token", None)
                 st.session_state.pop("cc_error", None)
                 st.rerun()
+            with st.expander("Debug info"):
+                rt = _get_secret("CC_REFRESH_TOKEN")
+                gid = _get_secret("CC_GIST_ID")
+                pat = _get_secret("GITHUB_PAT")
+                st.write(f"CC_REFRESH_TOKEN: {'✓ ' + rt[:6] + '...' if rt else '✗ missing'}")
+                st.write(f"CC_GIST_ID: {'✓ set' if gid else '✗ missing'}")
+                st.write(f"GITHUB_PAT: {'✓ set' if pat else '✗ missing'}")
+                st.write(f"Error: {cc_err}")
 
         st.divider()
         run_mc = st.checkbox("Include Mailchimp",         value=bool(mc_key))
