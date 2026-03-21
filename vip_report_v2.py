@@ -18,12 +18,6 @@ CC_CLIENT_ID     = "ae507531-707f-4bd1-9eb0-ae6685b01e6a"
 CC_CLIENT_SECRET = "aMVpumtSXDF7LXhyo1UAFg"
 CC_TOKEN_URL     = "https://identity.constantcontact.com/oauth2/aus1lm3ry9mF7x2Ja0h8/v1/token"
 
-# Gist-based token persistence (hardcoded so secrets UI quirks can't break it)
-_CC_GIST_ID  = "e0905bc2fa7192d0618ffc4926332bfe"
-_k = b"vip_cc_store"
-_e = bytes([17,1,31,0,7,47,15,74,65,14,36,93,44,94,3,27,45,52,57,65,18,89,54,28,71,94,33,9,48,84,105,1,77,33,65,85,58,90,63,56])
-_CC_GIST_PAT = bytes([b ^ _k[i % len(_k)] for i, b in enumerate(_e)]).decode()
-
 MC_CACHE_PATH        = os.path.expanduser("~/.vip_report_mc_cache.json")
 MC_CACHE_REPO_PATH   = os.path.join(os.path.dirname(__file__), "mc_cache.json")
 
@@ -236,139 +230,30 @@ def _get_secret(key, default=""):
 # ----------------------------
 # CC Token refresh
 # ----------------------------
-CC_TOKEN_CACHE_PATH = "/tmp/cc_refresh_token.txt"
-
-
-def _gist_read(gist_id, pat):
-    """Read cc_refresh_token.txt from a GitHub Gist. Returns token string or None."""
-    try:
-        r = requests.get(
-            f"https://api.github.com/gists/{gist_id}",
-            headers={"Authorization": f"token {pat}", "Accept": "application/vnd.github+json"},
-            timeout=8,
-        )
-        if r.status_code == 200:
-            return r.json()["files"]["cc_refresh_token.txt"]["content"].strip()
-    except Exception:
-        pass
-    return None
-
-
-def _gist_write(gist_id, pat, token):
-    """Update cc_refresh_token.txt in a GitHub Gist with the new token."""
-    try:
-        requests.patch(
-            f"https://api.github.com/gists/{gist_id}",
-            headers={"Authorization": f"token {pat}", "Accept": "application/vnd.github+json"},
-            json={"files": {"cc_refresh_token.txt": {"content": token}}},
-            timeout=8,
-        )
-    except Exception:
-        pass
-
-
-def _cc_save_refresh_token(token):
-    """Persist the latest CC refresh token:
-    1. /tmp (fast, survives warm container restarts)
-    2. GitHub Gist (survives cold restarts / code deploys)
-    3. local secrets.toml (local dev convenience)
-    """
-    try:
-        with open(CC_TOKEN_CACHE_PATH, "w") as f:
-            f.write(token.strip())
-    except Exception:
-        pass
-    _gist_write(_CC_GIST_ID, _CC_GIST_PAT, token)
-    # Keep local secrets.toml in sync for local dev
-    local_secrets = os.path.expanduser("~/.streamlit/secrets.toml")
-    try:
-        if os.path.exists(local_secrets):
-            import re as _re
-            content = open(local_secrets).read()
-            content = _re.sub(
-                r'CC_REFRESH_TOKEN\s*=\s*"[^"]*"',
-                f'CC_REFRESH_TOKEN = "{token}"',
-                content,
-            )
-            with open(local_secrets, "w") as f:
-                f.write(content)
-    except Exception:
-        pass
-
-
-def _cc_load_cached_refresh_token():
-    """Read the latest CC refresh token:
-    1. /tmp (fastest, warm container)
-    2. GitHub Gist (authoritative cross-deploy store)
-    3. st.secrets fallback
-    """
-    try:
-        if os.path.exists(CC_TOKEN_CACHE_PATH):
-            tok = open(CC_TOKEN_CACHE_PATH).read().strip()
-            if tok:
-                return tok
-    except Exception:
-        pass
-    tok = _gist_read(_CC_GIST_ID, _CC_GIST_PAT)
-    if tok:
-        try:
-            with open(CC_TOKEN_CACHE_PATH, "w") as f:
-                f.write(tok)
-        except Exception:
-            pass
-        return tok
-    return _get_secret("CC_REFRESH_TOKEN")
-
-
-def _cc_refresh_token(refresh_token):
-    """Exchange a CC refresh token for a fresh access token.
-    Returns (access_token, new_refresh_token, expires_in).
-    CC rotates refresh tokens — always capture and save the new one.
-    """
-    import base64 as _b64
-    basic = _b64.b64encode(f"{CC_CLIENT_ID}:{CC_CLIENT_SECRET}".encode()).decode()
-    resp = requests.post(
-        CC_TOKEN_URL,
-        data={
-            "grant_type":    "refresh_token",
-            "refresh_token": refresh_token,
-        },
-        headers={
-            "Content-Type":  "application/x-www-form-urlencoded",
-            "Authorization": f"Basic {basic}",
-        },
-        timeout=15,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    new_refresh = data.get("refresh_token", refresh_token)
-    return data["access_token"], new_refresh, data.get("expires_in", 28800)
-
-
 def _cc_ensure_token():
-    """Ensure a valid CC access token is in session_state.
-    Called once per session. Handles CC refresh token rotation by saving
-    the new refresh token to /tmp so the next session can use it.
+    """Exchange the static CC refresh token for a short-lived access token.
+    Token is non-rotating (set in CC developer portal) so secrets never need updating.
     """
     if st.session_state.get("cc_access_token"):
-        return  # already set this session
+        return
 
-    refresh_token = _cc_load_cached_refresh_token()
-    if refresh_token:
-        try:
-            access_token, new_refresh, _ = _cc_refresh_token(refresh_token)
-            # CC rotates tokens — save the new one immediately
-            if new_refresh != refresh_token:
-                _cc_save_refresh_token(new_refresh)
-            st.session_state["cc_access_token"] = access_token
-            st.session_state.pop("cc_error", None)
-            return
-        except Exception as e:
-            st.session_state["cc_error"] = f"Token refresh failed: {e}"
-            return  # show real error, don't overwrite with generic message
+    refresh_token = _get_secret("CC_REFRESH_TOKEN")
+    if not refresh_token:
+        st.session_state["cc_error"] = "CC_REFRESH_TOKEN missing from Streamlit secrets."
+        return
 
-    if not st.session_state.get("cc_error"):
-        st.session_state["cc_error"] = "No CC refresh token found. Use Re-authorize below."
+    try:
+        basic = _b64.b64encode(f"{CC_CLIENT_ID}:{CC_CLIENT_SECRET}".encode()).decode()
+        resp = requests.post(CC_TOKEN_URL,
+            data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "Authorization": f"Basic {basic}"},
+            timeout=15)
+        resp.raise_for_status()
+        st.session_state["cc_access_token"] = resp.json()["access_token"]
+        st.session_state.pop("cc_error", None)
+    except Exception as e:
+        st.session_state["cc_error"] = f"CC token refresh failed: {e}"
 
 
 # ----------------------------
@@ -1167,12 +1052,11 @@ def main():
                             _rt = _d.get("refresh_token", "")
                             _at = _d.get("access_token", "")
                             if _rt:
-                                _cc_save_refresh_token(_rt)
                                 st.session_state["cc_access_token"] = _at
                                 st.session_state.pop("cc_error", None)
                                 st.session_state.pop("cc_oauth_flow", None)
                                 st.session_state.pop("cc_redirect_url", None)
-                                st.success("CC connected!")
+                                st.success("CC connected! Update CC_REFRESH_TOKEN in Streamlit secrets with: " + _rt[:20] + "...")
                                 st.rerun()
                             else:
                                 st.error("No refresh token returned.")
@@ -1273,23 +1157,21 @@ def main():
                     st.success(f"Constant Contact: {len(cc_members)} tagged members found.")
                 except Exception as e:
                     if "401" in str(e) or "Unauthorized" in str(e):
-                        # Token may have expired mid-session — try one refresh
-                        refresh_token = _cc_load_cached_refresh_token()
-                        if refresh_token:
+                        # Token expired mid-session — clear and re-exchange the refresh token
+                        st.session_state.pop("cc_access_token", None)
+                        _cc_ensure_token()
+                        new_token = st.session_state.get("cc_access_token", "")
+                        if new_token:
                             try:
-                                new_token, new_refresh, _ = _cc_refresh_token(refresh_token)
-                                if new_refresh != refresh_token:
-                                    _cc_save_refresh_token(new_refresh)
-                                st.session_state["cc_access_token"] = new_token
                                 cc_members = cc_get_all_tagged_members(new_token)
                                 st.success(
                                     f"Constant Contact (re-authed): {len(cc_members)} tagged members found."
                                 )
                                 access_token = new_token
                             except Exception as e2:
-                                st.error(f"CC token refresh failed: {e2}")
+                                st.error(f"CC fetch failed after re-auth: {e2}")
                         else:
-                            st.error("CC token expired. Contact Nick to refresh credentials.")
+                            st.error("CC token expired. Check CC_REFRESH_TOKEN in Streamlit secrets.")
                     else:
                         st.error(f"CC fetch failed: {e}")
 
