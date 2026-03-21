@@ -364,17 +364,11 @@ def _cc_ensure_token():
             st.session_state.pop("cc_error", None)
             return
         except Exception as e:
-            st.session_state["cc_error"] = f"CC token refresh failed: {e}"
+            st.session_state["cc_error"] = f"Token refresh failed: {e}"
+            return  # show real error, don't overwrite with generic message
 
-    # Fallback: direct access token (for local dev)
-    access_token = _get_secret("CC_ACCESS_TOKEN")
-    if access_token:
-        st.session_state["cc_access_token"] = access_token
-        st.session_state.pop("cc_error", None)
-    else:
-        st.session_state["cc_error"] = (
-            "No CC credentials. Set CC_REFRESH_TOKEN in Streamlit secrets."
-        )
+    if not st.session_state.get("cc_error"):
+        st.session_state["cc_error"] = "No CC refresh token found. Use Re-authorize below."
 
 
 # ----------------------------
@@ -1132,16 +1126,58 @@ def main():
                     (f" — {cc_err}" if cc_err and not cc_tok else ""))
 
         if cc_err and not cc_tok:
-            if st.button("Retry CC Connection"):
-                st.session_state.pop("cc_access_token", None)
-                st.session_state.pop("cc_error", None)
-                st.rerun()
-            with st.expander("Debug info"):
-                rt = _get_secret("CC_REFRESH_TOKEN")
-                gist_tok = _gist_read(_CC_GIST_ID, _CC_GIST_PAT)
-                st.write(f"Secrets CC_REFRESH_TOKEN: {'✓ ' + rt[:6] + '...' if rt else '✗ missing'}")
-                st.write(f"Gist token: {'✓ ' + gist_tok[:6] + '...' if gist_tok else '✗ missing/unreachable'}")
-                st.write(f"Error: {cc_err}")
+            st.caption(f"_{cc_err}_")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Retry"):
+                    st.session_state.pop("cc_access_token", None)
+                    st.session_state.pop("cc_error", None)
+                    st.rerun()
+            with col2:
+                if st.button("Re-authorize CC"):
+                    st.session_state["cc_oauth_flow"] = True
+
+            if st.session_state.get("cc_oauth_flow"):
+                import urllib.parse as _up
+                _auth_url = (
+                    "https://authz.constantcontact.com/oauth2/default/v1/authorize"
+                    "?response_type=code"
+                    f"&client_id={CC_CLIENT_ID}"
+                    f"&redirect_uri={_up.quote('https://localhost', safe='')}"
+                    "&scope=account_read+contact_data+campaign_data+offline_access"
+                    "&state=vip_setup"
+                )
+                st.markdown(f"**Step 1:** [Click to authorize Constant Contact]({_auth_url})")
+                st.markdown("**Step 2:** After login, paste the redirect URL from your address bar:")
+                redirect_url = st.text_input("Redirect URL (starts with https://localhost/?code=...)", key="cc_redirect_url")
+                if redirect_url and "code=" in redirect_url:
+                    parsed = _up.urlparse(redirect_url)
+                    code = _up.parse_qs(parsed.query).get("code", [None])[0]
+                    if code:
+                        try:
+                            import base64 as _b64
+                            _basic = _b64.b64encode(f"{CC_CLIENT_ID}:{CC_CLIENT_SECRET}".encode()).decode()
+                            _r = requests.post(CC_TOKEN_URL,
+                                data={"grant_type": "authorization_code", "code": code,
+                                      "redirect_uri": "https://localhost"},
+                                headers={"Content-Type": "application/x-www-form-urlencoded",
+                                         "Authorization": f"Basic {_basic}"}, timeout=15)
+                            _r.raise_for_status()
+                            _d = _r.json()
+                            _rt = _d.get("refresh_token", "")
+                            _at = _d.get("access_token", "")
+                            if _rt:
+                                _cc_save_refresh_token(_rt)
+                                st.session_state["cc_access_token"] = _at
+                                st.session_state.pop("cc_error", None)
+                                st.session_state.pop("cc_oauth_flow", None)
+                                st.session_state.pop("cc_redirect_url", None)
+                                st.success("CC connected!")
+                                st.rerun()
+                            else:
+                                st.error("No refresh token returned.")
+                        except Exception as _ex:
+                            st.error(f"Exchange failed: {_ex}")
 
         st.divider()
         run_mc = st.checkbox("Include Mailchimp",         value=bool(mc_key))
